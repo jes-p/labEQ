@@ -35,7 +35,8 @@ import os
 _home = os.path.expanduser("~") + "/"
 for d in os.listdir(_home + "git_repos"):
     sys.path.append(_home + "git_repos/" + d)
-
+    
+import warnings
 
 ######### personal helpers ##########
 # Specific to my data flow, maybe separate out to a different module
@@ -123,13 +124,57 @@ def setup_experiment_from_dir(exp_name: str, glob_str="*.tpc5"):
         ds.add_waveforms(create_stream_tpc5(wf, ds.stns), tag)
     return ds
 
-
 class LabDataSet(pyasdf.ASDFDataSet):
     """
     Object handling special Lab ASDF files and operations.
     """
 
-    # don't override __init__
+    # override __init__ to initialize simple event catalog
+    def __init__(self, filename, **kwargs):
+        # ASDFDataSet has a specific list of kwargs but I don't expect to change any
+        # Using a method, not adding an attribute, so maybe call super().__init__() first?
+        super().__init__(filename, **kwargs)
+        # init runs every time an object is loaded so I need to check if LabEvents already exists
+        if "LabEvents" not in self.auxiliary_data.list():
+            self.add_auxiliary_data(data = np.array([], dtype=int),
+                                    data_type = "LabEvents",
+                                    path = "counter",
+                                    parameters = dict())
+    
+    def add_event(self):
+        cc = self.auxiliary_data.LabEvents.counter.data[:]
+        cdict = self.auxiliary_data.LabEvents.counter.parameters # expected to be empty
+        del self.auxiliary_data.LabEvents.counter
+        next_ev = len(cc)
+        cc = np.append(cc,next_ev)
+        self.add_auxiliary_data(data=cc,
+                              data_type="LabEvents",
+                              path="counter",
+                              parameters=cdict)
+        return f'event_{next_ev:0>3d}'
+    
+    def update_event(self, event_str, **kwargs):
+        """
+        Update event info under LabEvents by adding a path to something associate
+        with the event."""
+        # get dictionary of existing event info
+        try:
+            event = self.auxiliary_data.LabEvents[event_str].parameters
+            del self.auxiliary_data.LabEvents[event_str]
+        except:
+            event = dict()
+        # check for overwrites
+        for k,v in event.items():
+            if k in kwargs.keys():
+                warnings.warn(f'Did you you want this?: {k} updated from {v} to {kwargs[k]}')
+        # add new args to dict
+        event.update(kwargs)
+        # return to aux data
+        self.add_auxiliary_data(data = np.array([]),
+                                data_type = 'LabEvents',
+                                path = event_str,
+                                parameters = event)
+    
 
     def add_local_locations(self, statxml_filepath):
         """
@@ -175,26 +220,34 @@ class LabDataSet(pyasdf.ASDFDataSet):
         )
 
     ######## picking methods of object ########
-    def add_picks(self, tag, trace_num, picks):
+    def add_picks(self, tag, trace_num, event_str, picks):
         """Add a dict of picks for a (tag,trcnum) path.
         Picks in the form {stn:[picks]}
         Returns any overwritten picks as a safety."""
         # check for old_picks to overwrite
         try:
-            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].parameters
-            del self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"]
+            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+            del self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str]
         except:
             old_picks = {}
+        path = f"{tag}/tr{trace_num}/{event_str}"
         self.add_auxiliary_data(
             data=np.array([]),
             data_type="LabPicks",
-            path=f"{tag}/tr{trace_num}",
+            path=path,
             parameters=picks,
         )
+        # make sure event backlink exists
+        try:
+            event = self.auxiliary_data.LabEvents[event_str].parameters
+            if event['LabPicks'] != path:
+                self.update_event(event_str, 'LabPicks'=path)
+        except:
+            self.update_event(event_str, 'LabPicks'=path)
         return old_picks
 
     def plot_picks(
-        self, tag, trace_num, view_mid, view_len, new_picks, figname="picks_plot"
+        self, tag, trace_num, event_str, view_mid, view_len, new_picks, figname="picks_plot"
     ):
         """Produce an interactive plot of traces with numbered picks, and existing picks if present.
         Assumes 16 sensors.
@@ -204,7 +257,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
         # are there existing picks?
         try:
-            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].parameters
+            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
             plot_op = 1
         except:
             plot_op = 0
@@ -250,7 +303,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
         print(f"Picks plot written to {figname}.html")
 
     def interactive_check_picks(
-        self, tag, trace_num, picks=None, view_mid=180000, view_len=40000
+        self, tag, trace_num, event_str, picks=None, view_mid=180000, view_len=40000
     ):
         """Plot picks for all stations for one (tag,trcnum) and accept user adjustments.
         Auto-picks if no picks are provided or already stored (by noise, only appropriate for very clean signals).
@@ -260,7 +313,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
         # auto-pick if necessary
         try:
-            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].parameters
+            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
         except:
             old_picks = {}
         if not picks:
@@ -352,8 +405,8 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
     ######## source location on object ########
     def locate_tag(self, tag, vp=0.272, bootstrap=False):
-        """Locates all picked traces within a tag. vp in cm/s
-        Assumes one pick per trace. TODO: fix that"""
+        """Locates all picked events within a tag. vp in cm/s
+        No longer assumes one pick per trace."""
         import scipy.optimize as opt
 
         stns = self.stns
@@ -364,32 +417,37 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
         ntrcs = len(self.waveforms["L0_" + stns[0]][tag])
         for trace_num in range(ntrcs):
-            # are there picks?
+            # are there events?
             try:
-                picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].parameters
+                events = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].list()
+                # don't think it's possible to get an empty list here
+                # and the loop just won't run if somehow we do get an empty list
+                #
             except:
                 continue
 
-            # associate locations
-            xys = [self.stat_locs[stn][:2] for stn in stns if picks[stn][0] > 0]
-            # picks to times
-            arrivals = [picks[stn][0] / 40 for stn in stns if picks[stn][0] > 0]
-            # sort xys and arrivals by arrival
-            xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
-            # run the nonlinear least squares
-            model, cov = opt.curve_fit(
-                curve_func_cm,
-                np.array(xys).T,
-                np.array(arrivals) - arrivals[0],
-                bounds=(0, [500, 500, 50]),
-            )
-            o_ind = [int((arrivals[0] - model[-1]) * 40)]
-            self.add_auxiliary_data(
-                data=model,
-                data_type="Origins",
-                path="{}/tr{}".format(tag, trace_num),
-                parameters={"o_ind": o_ind, "cov": cov},
-            )
+            for event_str in events:
+                picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+                # associate locations
+                xys = [self.stat_locs[stn][:2] for stn in stns if picks[stn][0] > 0]
+                # picks to times
+                arrivals = [picks[stn][0] / 40 for stn in stns if picks[stn][0] > 0]
+                # sort xys and arrivals by arrival
+                xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
+                # run the nonlinear least squares
+                model, cov = opt.curve_fit(
+                    curve_func_cm,
+                    np.array(xys).T,
+                    np.array(arrivals) - arrivals[0],
+                    bounds=(0, [500, 500, 50]),
+                )
+                o_ind = [int((arrivals[0] - model[-1]) * 40)]
+                self.add_auxiliary_data(
+                    data=model,
+                    data_type="Origins",
+                    path=f"{tag}/tr{trace_num}/{event_str}",
+                    parameters={"o_ind": o_ind, "cov": cov},
+                )
 
     ######## content check ########
     def check_auxdata(self):
@@ -423,10 +481,10 @@ class LabDataSet(pyasdf.ASDFDataSet):
         return True
 
     ######## get traces ########
-    def get_traces(self, tag, trace_num, pre=200, tot_len=2048):
+    def get_traces(self, tag, trace_num, event_str='', pre=200, tot_len=2048):
         """Return a dict of short traces from a tag/trcnum based on picks."""
         traces = {}
-        picks = self.get_picks(tag, trace_num)
+        picks = self.get_picks(tag, trace_num, event_str)
         for stn, pp in picks.items():
             if "L" in stn[:1]:
                 stn = stn[3:]  # deal with existing picks having dumb station names
@@ -435,9 +493,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
             traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
         return traces
 
-    def get_picks(self, tag, trace_num):
+    def get_picks(self, tag, trace_num, event_str=''):
         """Shortcut to return the picks dictionary."""
-        return self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].parameters
+        if not event_str:
+            events = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].list()
+            if len(events) > 1:
+                warnings.warn("Warning: More than one event present, using first in list:\n{events}")
+            event_str = events[0]
+        return self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
 
 
 ######## picking helpers ########
