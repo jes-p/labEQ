@@ -16,8 +16,8 @@ import sys
 import os
 
 _home = os.path.expanduser("~") + "/"
-for d in os.listdir(_home + "git_repos"):
-    sys.path.append(_home + "git_repos/" + d)
+for d in os.listdir(_home + "dev"):
+    sys.path.append(_home + "dev/" + d)
 
 import lab_data_set as lds
 

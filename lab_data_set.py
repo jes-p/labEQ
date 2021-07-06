@@ -33,8 +33,8 @@ import sys
 import os
 
 _home = os.path.expanduser("~") + "/"
-for d in os.listdir(_home + "git_repos"):
-    sys.path.append(_home + "git_repos/" + d)
+for d in os.listdir(_home + "dev"):
+    sys.path.append(_home + "dev/" + d)
     
 import warnings
 
@@ -155,7 +155,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
     
     def update_event(self, event_str, **kwargs):
         """
-        Update event info under LabEvents by adding a path to something associate
+        Update event info under LabEvents by adding a path to something associated
         with the event."""
         # get dictionary of existing event info
         try:
@@ -385,7 +385,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
             adjust = input("Adjust a channel? - to exit: ")
 
         # add picks, catching and returning overwritten old_picks
-        old_picks = self.add_picks(tag, trace_num, picks)
+        old_picks = self.add_picks(tag, trace_num, event_str, picks)
         return old_picks
     
     def pick_all_near(
@@ -442,12 +442,22 @@ class LabDataSet(pyasdf.ASDFDataSet):
                     bounds=(0, [500, 500, 50]),
                 )
                 o_ind = [int((arrivals[0] - model[-1]) * 40)]
+                path = f"{tag}/tr{trace_num}/{event_str}"
                 self.add_auxiliary_data(
                     data=model,
                     data_type="Origins",
-                    path=f"{tag}/tr{trace_num}/{event_str}",
+                    path=path,
                     parameters={"o_ind": o_ind, "cov": cov},
                 )
+                # make sure event backlink exists
+                try:
+                    event = self.auxiliary_data.LabEvents[event_str].parameters
+                    if event['Origins'] != path:
+                        self.update_event(event_str, 'Origins'=path)
+                except:
+                    self.update_event(event_str, 'Origins'=path)
+                return old_picks
+
 
     ######## content check ########
     def check_auxdata(self):
