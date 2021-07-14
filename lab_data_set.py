@@ -241,9 +241,9 @@ class LabDataSet(pyasdf.ASDFDataSet):
         try:
             event = self.auxiliary_data.LabEvents[event_str].parameters
             if event['LabPicks'] != path:
-                self.update_event(event_str, 'LabPicks'=path)
+                self.update_event(event_str, LabPicks=path)
         except:
-            self.update_event(event_str, 'LabPicks'=path)
+            self.update_event(event_str, LabPicks=path)
         return old_picks
 
     def plot_picks(
@@ -453,10 +453,9 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 try:
                     event = self.auxiliary_data.LabEvents[event_str].parameters
                     if event['Origins'] != path:
-                        self.update_event(event_str, 'Origins'=path)
+                        self.update_event(event_str, Origins=path)
                 except:
-                    self.update_event(event_str, 'Origins'=path)
-                return old_picks
+                    self.update_event(event_str, Origins=path)
 
 
     ######## content check ########
@@ -492,13 +491,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
     ######## get traces ########
     def get_traces(self, tag, trace_num, event_str='', pre=200, tot_len=2048):
-        """Return a dict of short traces from a tag/trcnum based on picks."""
+        """Return a dict of short traces from a tag/trcnum based on picks. Omits un-picked traces."""
         traces = {}
         picks = self.get_picks(tag, trace_num, event_str)
         for stn, pp in picks.items():
             if "L" in stn[:1]:
                 stn = stn[3:]  # deal with existing picks having dumb station names
             pp = pp[0]
+            if pp == -1: continue
             sl = slice(pp - pre, pp - pre + tot_len)
             traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
         return traces
@@ -572,6 +572,7 @@ def auto_pick_by_noise(
         picks = [-1]
     return picks
 
+######## plotting helpers ########
 
 def subplts(row, col, titles="default"):
     if titles == "default":
@@ -585,6 +586,35 @@ def subplts(row, col, titles="default"):
     )
     return fig, plotkey
 
+def grid_plot(plot_data: dict, plot_file_name, legend=True):
+    """Make and save a 4x4 plotly plot. Takes a dict like {plot title: [items to plot]} and file name to save the figure. Items should be a list of dicts of keyword args accepted by go.Scattergl. Doesn't return the figure.
+    Useful Scattergl keywords:
+        y: required, no default (all others optional)
+        x: defaults to indices
+        name: legend entry for trace
+        legendgroup: groups legend items to toggle together (e.g. 'Raw', 'Preprocess', 'New Picks', etc.)
+        """
+    fig,plotkey = subplts(4,4,plot_data.keys())
+    color_list = ['black', 'red', 'blue', 'green', 'orange', 'magenta', 'gray']
+    ncol = len(color_list)
+    for i,ttl in enumerate(plot_data.keys()): 
+        # iterate through traces
+        for j,tdict in enumerate(plot_data[ttl]):
+            # set default values
+            trace_vals = {'line': {'color': color_list[j % ncol]},
+                          }
+            # default to drop legends after first plot for neatness
+            if i > 0:
+                trace_vals.update({'showlegend':False})
+            # update (overwriting) with input values
+            trace_vals.update(tdict)
+            # add trace to plot
+            fig.append_trace(go.Scattergl(**trace_vals),int(plotkey[i][0]),plotkey[i][1])
+            
+    # finish figure
+    if not legend:
+        fig["layout"].update(showlegend=False)
+    fig.write_html(plot_file_name + '.html')
 
 ######## source helpers ########
 def ball_force(
