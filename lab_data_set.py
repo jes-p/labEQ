@@ -252,7 +252,6 @@ class LabDataSet(pyasdf.ASDFDataSet):
         """Produce an interactive plot of traces with numbered picks, and existing picks if present.
         Assumes 16 sensors.
         TODO: old_picks markers are too big"""
-        fig, plotkey = subplts(4, 4)
         start,stop = [int(view_mid - view_len/2), int(view_mid + view_len/2)]
 
         # are there existing picks?
@@ -262,44 +261,34 @@ class LabDataSet(pyasdf.ASDFDataSet):
         except:
             plot_op = 0
 
-        for i, stn in enumerate(self.stns):
+        plot_data = {}
+        for stn in self.stns:
+            plot_data[stn] = []
             # plot trace
             trc = self.waveforms["L0_" + stn][tag][trace_num].data
-            fig.append_trace(
-                go.Scattergl(
-                    y=trc[start : stop], line={"color": "black"}
-                ),
-                int(plotkey[i][0]),
-                plotkey[i][1],
-            )
+            plot_data[stn].append({'y':trc[start : stop],'legendgroup':'traces','name':'raw trace'})
+            
             # plot existing picks, if any in window
             if plot_op and old_picks[stn][0] > start:
-                fig.append_trace(
-                    go.Scatter(
-                        x=np.array(old_picks[stn]) - start,
-                        y=trc[old_picks[stn]],
-                        mode="markers",
-                        marker={"symbol": "x", "color": "blue", "size": 10},
-                    ),
-                    int(plotkey[i][0]),
-                    plotkey[i][1],
-                )
+                plot_data[stn].append({'x':np.array(old_picks[stn]) - start,
+                        'y':trc[old_picks[stn]],
+                        'mode':"markers",
+                        'marker':{"symbol": "x", "size": 10},
+                        'name':'old picks',
+                        'legendgroup':'old picks'})
+
             # plot new picks, if any in window
             if new_picks[stn][0] > start:
-                fig.append_trace(
-                    go.Scatter(
-                        x=np.array(new_picks[stn]) - start,
-                        y=trc[new_picks[stn]],
-                        mode="markers+text",
-                        text=[str(np) for np in range(len(new_picks[stn]))],
-                        textposition="bottom center",
-                    ),
-                    int(plotkey[i][0]),
-                    plotkey[i][1],
-                )
-        # plot the figure
-        fig["layout"].update(showlegend=False)
-        fig.write_html(figname + ".html")
+                plot_data[stn].append({'x':np.array(new_picks[stn]) - start,
+                        'y':trc[new_picks[stn]],
+                        'mode':"markers+text",
+                        'text':[str(np) for np in range(len(new_picks[stn]))],
+                        'textposition':"bottom center",
+                        'name':'new picks',
+                        'legendgroup':'new picks'})
+                
+       # plot the figure
+        grid_plot(plot_data,figname)
         print(f"Picks plot written to {figname}.html")
 
     def interactive_check_picks(
@@ -325,7 +314,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
             else:
                 picks = old_picks
                 # TODO: there has to be better logic for this (still?)
-        self.plot_picks(tag, trace_num, view_mid, view_len, picks)
+        self.plot_picks(tag, trace_num, event_str, view_mid, view_len, picks)
 
         # ask for inputs
         print(
@@ -511,6 +500,15 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 warnings.warn("Warning: More than one event present, using first in list:\n{events}")
             event_str = events[0]
         return self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+    
+    def get_tag_trcnum(self,event_id):
+        """Return tag and trace_num for an event. Accepts event number or event_str."""
+        if isinstance(event_id,int):
+            event_id = f'event_{event_id:0>3d}'
+        tag,trace_num = self.auxiliary_data.LabEvents[event_id].parameters['LabPicks'].split('/')[:2]
+        trace_num = int(trace_num[2:])
+        return tag,trace_num
+    
 
 
 ######## picking helpers ########
@@ -636,3 +634,9 @@ def ball_force(
         fmax * np.power(np.sin(np.pi * ftime / tc), 1.5)
     )  # times past tc are nan->0
     return tc, ffunc
+
+######## other helpers ########
+
+def event_str(event_num):
+    """Return formatted event string for an integer event number."""
+    return f'event_{event_num:0>3d}'

@@ -30,10 +30,14 @@ def invert(ds: lds.LabDataSet, event_num, weights: dict, pre=200, tot_len=2048, 
     # get tag from event
     tag,trace_num = ds.auxiliary_data.LabEvents[event_str].parameters['LabPicks'].split('/')[:2]
     trace_num = int(trace_num[2:])
+    # prepare plot_data dict to collect pieces throughout the analysis
+    plot_data = {}
     
     # Get and prep records
     ## pull recs extra-long to filter better (dict of {'AExx': np.array})
     traces = ds.get_traces(tag, trace_num, event_str=event_str, pre=pre+extra, tot_len=tot_len+2*extra)
+    # make a shifted time array for plotting extra-long recs
+    x_raw = np.array(range(tot_len+2*extra)) - extra
     ## de-mean, filter, and slice
     prep_trcs = traces.copy() # so that I can return the exact starting traces
     nyquist = 1/(2*dt)
@@ -45,7 +49,13 @@ def invert(ds: lds.LabDataSet, event_num, weights: dict, pre=200, tot_len=2048, 
         trc -= offset
         trc = signal.detrend(signal.sosfiltfilt(sos,trc)) # symmetric so arrival shouldn't shift
         prep_trcs[stn] = trc[extra:(tot_len+extra)]
+        # add raw and prepped traces to plot_data
+        plot_data[stn] = []
+        plot_data[stn].append({'x':x_raw, 'y':traces[stn],'name':'raw','legendgroup':'raw'})
+        plot_data[stn].append({'y':prep_trcs[stn],'name':'pre-proc','legendgroup':'pre-proc'})
     # Checkpoint: plot original and prepped traces
+    lds.grid_plot(plot_data,'inversion_prep')
+    
     
     return traces, prep_trcs
     
