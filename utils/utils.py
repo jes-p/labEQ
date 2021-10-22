@@ -8,10 +8,3 @@ def parse_eid(event_id):
         event_str = event_id
     return event_str
 
-def get_event(ds, event_id):
-    """Get event_str, tag, and trace_num for an event in the dataset"""
-    event_str = parse_eid(event_id)
-    edict = ds.auxiliary_data.LabEvents[event_str].parameters
-    tag = edict['tag']
-    tnum = edict['trace_num']
-    return event_str, tag, tnum
