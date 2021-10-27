@@ -388,12 +388,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
     ######## source location on object ########
     def locate_tag(self, tag, vp=0.274, bootstrap=False):
-        """Locates all picked events within a tag. vp in cm/s
+        """ deprecated and broken
+        Locates all picked events within a tag. vp in cm/us
         No longer assumes one pick per trace."""
         import scipy.optimize as opt
 
         stns = self.stns
 
+        # define curve_func internally so vp isn't a function input
         def curve_func_cm(X, a, b, c):
             t = np.sqrt((X[0] - a) ** 2 + (X[1] - b) ** 2 + 3.85 ** 2) / vp - c
             return t
@@ -440,6 +442,49 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 except:
                     self.update_event(event_str, Origins=path)
 
+    def locate_event(self, event_id, vp=2.74):
+        """Locate an event. vp in mm/us. Note that stn_locs are in cm but vp is converted.
+        """
+        import scipy.optimize as opt
+
+        event_str,tag,trace_num = self.get_event(event_id)
+
+        picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+        # associate locations
+        xys = [self.stat_locs[stn][:2] for stn in self.stns if picks[stn][0] > 0]
+        # picks to times
+        arrivals = [picks[stn][0] / 40 for stn in self.stns if picks[stn][0] > 0]
+        # sort xys and arrivals by arrival
+        xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
+        # get fitting function
+        def curve_func_cm(X, a, b, c):
+            t = np.sqrt((X[0] - a) ** 2 + (X[1] - b) ** 2 + 3.85 ** 2) / (vp/10) - c
+            return t
+        # run the nonlinear least squares
+        model, cov = opt.curve_fit(
+            curve_func_cm,
+            np.array(xys).T,
+            np.array(arrivals) - arrivals[0],
+            bounds=(0, [500, 500, 50]),
+        )
+        o_ind = [int((arrivals[0] - model[-1]) * 40)]
+        path = f"{tag}/tr{trace_num}/{event_str}"
+        self.add_auxiliary_data(
+            data=model[:2],
+            data_type="Origins",
+            path=path,
+            parameters={"o_ind": o_ind, "cov": cov},
+        )
+        
+
+    def get_dists(self,event_id,prec=2):
+        """Get epicentral station distances for an event, in mm.
+           org and stat_locs in cm, dists returned in mm, rounded to two places by default
+        """
+        ev,tag,tr = self.get_event(event_id)
+        org = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].data[:]
+        dists = {stn:np.round(np.sqrt(np.sum((self.stat_locs[stn][:2]-org)**2))*10,prec) for stn in self.stns}
+        return dists
 
     ######## content check ########
     def check_auxdata(self):
@@ -472,6 +517,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
         print("LabPicks and Origins present for all other tags.")
         return True
 
+    def get_event(self, event_id):
+        """Get event_str, tag, and trace_num for an event in the dataset"""
+        event_str = utils.parse_eid(event_id)
+        edict = self.auxiliary_data.LabEvents[event_str].parameters
+        tag = edict['tag']
+        tnum = edict['trace_num']
+        return event_str, tag, tnum
+    
     ######## get traces ########
     def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048):
         """Return a dict of short traces from a tag/trcnum based on picks. Omits un-picked traces."""
@@ -635,10 +688,3 @@ def event_str(event_num):
     """Return formatted event string for an integer event number."""
     return f'event_{event_num:0>3d}'
 
-def get_event(self, event_id):
-    """Get event_str, tag, and trace_num for an event in the dataset"""
-    event_str = utils.parse_eid(event_id)
-    edict = self.auxiliary_data.LabEvents[event_str].parameters
-    tag = edict['tag']
-    tnum = edict['trace_num']
-    return event_str, tag, tnum

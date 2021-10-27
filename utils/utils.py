@@ -8,3 +8,4 @@ def parse_eid(event_id):
         event_str = event_id
     return event_str
 
+
