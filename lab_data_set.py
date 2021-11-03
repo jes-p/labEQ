@@ -29,8 +29,9 @@ import peakutils
 import re
 
 # Add paths to my other modules
-from .utils import utils
-from .utils import green
+#from .utils import utils, green
+import utils.utils as utils
+import utils.green as green
 import sys
 import os
 
@@ -526,19 +527,28 @@ class LabDataSet(pyasdf.ASDFDataSet):
         return event_str, tag, tnum
     
     ######## get traces ########
-    def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048):
+    def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048, omit=True):
         """Return a dict of short traces from a tag/trcnum based on picks. Omits un-picked traces."""
         if not tag:
-            event_str,tag,trace_num = get_event(event_id)
+            event_str,tag,trace_num = self.get_event(event_id)
         else:
             event_str = utils.parse_eid(event_id)
         traces = {}
-        picks = self.get_picks(event_id, tag=tag, trace_num=trace_num)
+        picks = self.get_event_picks(event_id)
+        if not omit:
+            dists = self.get_dists(event_id)
         for stn, pp in picks.items():
             if "L" in stn[:1]:
                 stn = stn[3:]  # deal with existing picks having dumb station names
             pp = pp[0]
-            if pp == -1: continue # TODO: write a separate function that will approximate a pick to return ALL traces
+            if pp == -1: 
+                if omit:
+                    continue
+                else:
+                    # use dist (mm) to get path length
+                    travel = np.sqrt(dist**2 + 38.5**2)
+                    event_ind = self.auxiliary_data.LabEvents[tag][f'tr{trace_num}'][event_str].parameters['o_ind']
+                    pp = int(travel/2.74 * 40) + event_ind
             sl = slice(pp - pre, pp - pre + tot_len)
             traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
         return traces
@@ -550,12 +560,12 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
     def get_event_picks(self, event_id):
         """Shortcut to return the picks dictionary for an event."""
-        event_str,tag,trace_num = get_event(event_id)
+        event_str,tag,trace_num = self.get_event(event_id)
         return self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
 
 
 ######## picking helpers ########
-
+# TODO move these to a picking module
 
 def pick_near(trace, near, reach_left=2000, reach_right=2000, thr=0.9, AIC=[]):
     """Get a list of picks for one trace."""
@@ -614,6 +624,7 @@ def auto_pick_by_noise(
     return picks
 
 ######## plotting helpers ########
+# TODO move these to utils
 
 def subplts(row, col, titles="default"):
     if titles == "default":
@@ -660,31 +671,4 @@ def grid_plot(plot_data: dict, plot_file_name, legend=True, number_plots=False):
     if not legend:
         fig["layout"].update(showlegend=False)
     fig.write_html(plot_file_name + '.html')
-
-######## source helpers ########
-def ball_force(
-    diam=(1.18e-3), rho=7850, nu=[0.28, 0.3], E=[200e9, 6e9], h=0.305, Fs=40e6
-):
-    """
-    calculate the force function from a ball drop
-    radius in m, ball density in kg/m^3, ball and surface PR, ball and surface YM in Pa
-    drop height in m, sampling freq. in Hz
-    pmma defaults: 1190, .3-.34, 6.2e9
-    steel: 7850, .28, 214e9"""
-    radius = diam / 2
-    v = np.sqrt(2 * 9.8 * h)
-    d = sum((1 - np.array(nu)) / (np.pi * np.array(E)))
-    tc = 4.53 * (4 * rho * np.pi * d / 3) ** 0.4 * radius * v ** -0.2
-    fmax = 1.917 * rho ** 0.6 * d ** -0.4 * radius ** 2 * v ** 1.2
-    ftime = np.arange(0, tc * 1.01, 1 / Fs)
-    ffunc = -1 * np.nan_to_num(
-        fmax * np.power(np.sin(np.pi * ftime / tc), 1.5)
-    )  # times past tc are nan->0
-    return tc, ffunc
-
-######## other helpers ########
-
-def event_str(event_num):
-    """Return formatted event string for an integer event number."""
-    return f'event_{event_num:0>3d}'
-
+    print(f'Plotted {os.getcwd()}{plot_file_name}.html')

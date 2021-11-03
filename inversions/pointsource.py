@@ -12,18 +12,40 @@ import time
 
 # Add paths to my other modules
 import sys
-import os
+from os.path import expanduser
+home = expanduser('~')+'/'
+sys.path.append(home+'dev/')
 
-_home = os.path.expanduser("~") + "/"
-for d in os.listdir(_home + "dev"):
-    sys.path.append(_home + "dev/" + d)
-
-import lab_data_set as lds
+from ..utils import utils, green
 
 # import GF accessor. or maybe don't, just require GF as arg and deal outside
 # no, I'd like to have pointsource handle requesting the right GF from the accessor
 
-def invert(ds: lds.LabDataSet, event_num, weights: dict, pre=200, tot_len=2048, extra = 500, dt = 2.5e-8, filt=[1e4,1e7]):
+def ball_forward(ds, event_id, pre=200, tot_len=2048, diam=0.75e-3, plot_title=''):
+    """Produce forward models for a ball drop. Plot is plot_title is given. Return dict of synthetics.
+    """
+    trcs = ds.get_event_traces(event_id, pre=pre, omit=False)
+    # get the GF
+    dists = ds.get_dists(event_id)
+    gf = green.get_greens(dists,tot_len-pre,pre,source_type='force')
+    # get ball force
+    _,ballforce = utils.ball_force(diam=diam)
+    # make synths
+    synths = {stn:np.convolve(np.diff(gf[stn]['f33']),ballforce) for stn in ds.stns}
+    if plot_title:
+        # grid_plot to compare
+        plotdata = {}
+        for stn in ds.stns:
+            # zeroed traces
+            zt = trcs[stn]-np.mean(trcs[stn][:pre-20])
+            plotdata[stn] = [{'y':zt, 'name':'zeroed trace'}]
+            # synths
+            calfac = np.min(zt[:pre+len(ballforce)])/np.min(synths[stn][:pre+len(ballforce)])
+            plotdata[stn].append({'y':synths[stn]*calfac, 'name':'synth'})
+        utils.grid_plot(plotdata,plot_title)
+    return synths
+
+def invert(ds, event_num, weights: dict, pre=200, tot_len=2048, extra = 500, dt = 2.5e-8, filt=[1e4,1e7]):
     """Run a point source inversion on the event."""
     
     event_str = f'event_{event_num:0>3d}'
@@ -54,7 +76,7 @@ def invert(ds: lds.LabDataSet, event_num, weights: dict, pre=200, tot_len=2048, 
         plot_data[stn].append({'x':x_raw, 'y':traces[stn],'name':'raw','legendgroup':'raw'})
         plot_data[stn].append({'y':prep_trcs[stn],'name':'pre-proc','legendgroup':'pre-proc'})
     # Checkpoint: plot original and prepped traces
-    lds.grid_plot(plot_data,'inversion_prep')
+    utils.grid_plot(plot_data,'inversion_prep')
     
     
     return traces, prep_trcs
