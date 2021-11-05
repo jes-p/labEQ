@@ -29,9 +29,9 @@ import peakutils
 import re
 
 # Add paths to my other modules
-#from .utils import utils, green
-import utils.utils as utils
-import utils.green as green
+from .utils import utils, green
+#import utils.utils as utils
+#import utils.green as green
 import sys
 import os
 
@@ -482,10 +482,16 @@ class LabDataSet(pyasdf.ASDFDataSet):
         """Get epicentral station distances for an event, in mm.
            org and stat_locs in cm, dists returned in mm, rounded to two places by default
         """
-        ev,tag,tr = self.get_event(event_id)
-        org = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].data[:]
+        org = self.get_event_location(event_id)
         dists = {stn:np.round(np.sqrt(np.sum((self.stat_locs[stn][:2]-org)**2))*10,prec) for stn in self.stns}
         return dists
+    
+    def get_event_location(self,event_id):
+        """Get location for event.
+        """
+        ev,tag,tr = self.get_event(event_id)
+        org = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].data[:]
+        return org
 
     ######## content check ########
     def check_auxdata(self):

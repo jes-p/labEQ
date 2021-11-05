@@ -31,6 +31,16 @@ def get_greens(dist_dict, post_len, pre=200, vp=2.74, vs=1.4, dist_prec=2, sourc
      
     return green
 
+def get_raytime(dist, post_len, pre=200, vp=2.74, vs=1.4, dist_prec=2, source_type='moment', path = '/home/jes/data/Lab_Data/BP3_GF/', verbose=1):
+    """Get raytime matrix for one distance.
+    """
+    fullpath = path + source_type + '/'
+    if not check_for_green(dist, post_len, dist_prec, source_type, path):
+        raise ValueError('GF not calculated for these parameters.')
+    fname = get_fname(dist,dist_prec)
+    with h5py.File(fullpath+fname,'r') as f:
+        return f['Green']['raytime'][:].T
+
 
 def calc_greens(dist_list: list, post_len, vp=2.74, vs=1.4, dist_prec=2, source_type='moment',path = '/home/jes/data/Lab_Data/BP3_GF/',verbose=1):
     """Calculate greens functions for a list of distances.

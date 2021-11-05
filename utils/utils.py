@@ -51,6 +51,18 @@ def ball_force(
     )  # times past tc are nan->0
     return tc, ffunc
 
+def get_phi(stn_loc,src_loc):
+    """Get azimuth (phi) in radians for station and source coordinates. The top block motion is in the -x direction.
+    """
+    dx,dy = [stn_loc[i]-src_loc[i] for i in [0,1]]
+    if dx==0:
+        phi = (np.pi/2) if dy>0 else (-1*np.pi/2)
+    elif dx<0:
+        phi = np.arctan(dy/dx)+np.pi
+    else:
+        phi = np.arctan(dy/dx)
+    return phi
+
 ######## plotting helpers ########
 
 def subplts(row, col, titles="default"):
