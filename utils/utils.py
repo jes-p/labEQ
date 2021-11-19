@@ -30,6 +30,20 @@ def xcorr_shift(base,model):
     lags = signal.correlation_lags(len(model), len(base), mode='same')
     return lags[np.argmax(corr)], np.max(acorr)/np.max(corr)
 
+def calc_sptime(dist,vp=2.74,vs=1.4,output='points'):
+    """Find the theoretical S-P time for an epicentral distance, in mm.
+    Output in sample points (points) or microseconds (us).
+    """
+    direct = np.sqrt(dist**2+38.5**2)
+    p_arr = direct/vp
+    s_arr = direct/vs
+    if output == 'points':
+        return round((s_arr-p_arr)*40)
+    elif output == 'us':
+        return s_arr-p_arr
+    else:
+        raise InputError('Invalid output option. Choose points or us.')
+
 ######## source helpers ########
 def ball_force(
     diam=(1.18e-3), rho=7850, nu=[0.28, 0.3], E=[200e9, 6e9], h=0.305, Fs=40e6

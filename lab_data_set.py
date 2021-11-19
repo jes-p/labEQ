@@ -552,9 +552,9 @@ class LabDataSet(pyasdf.ASDFDataSet):
                     continue
                 else:
                     # use dist (mm) to get path length
-                    travel = np.sqrt(dist**2 + 38.5**2)
-                    event_ind = self.auxiliary_data.LabEvents[tag][f'tr{trace_num}'][event_str].parameters['o_ind']
-                    pp = int(travel/2.74 * 40) + event_ind
+                    travel = np.sqrt(dists[stn]**2 + 38.5**2)
+                    event_ind = self.auxiliary_data.Origins[tag][f'tr{trace_num}'][event_str].parameters['o_ind']
+                    pp = int(travel/2.74 * 40) + event_ind[0]
             sl = slice(pp - pre, pp - pre + tot_len)
             traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
         return traces
