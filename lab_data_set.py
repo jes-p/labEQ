@@ -533,7 +533,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
         return event_str, tag, tnum
     
     ######## get traces ########
-    def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048, omit=True):
+    def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048, omit=True, select_stns=[]):
         """Return a dict of short traces from a tag/trcnum based on picks. Omits un-picked traces."""
         if not tag:
             event_str,tag,trace_num = self.get_event(event_id)
@@ -544,6 +544,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
         if not omit:
             dists = self.get_dists(event_id)
         for stn, pp in picks.items():
+            if select_stns and stn not in select_stns: continue
             if "L" in stn[:1]:
                 stn = stn[3:]  # deal with existing picks having dumb station names
             pp = pp[0]
