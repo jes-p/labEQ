@@ -1,109 +1,87 @@
-"""Module for managing Green's functions."""
-import matlab.engine
-import h5py
-import numpy as np
-from os.path import exists as path_exists
+"""Module to manage green's functions (calculated with CPS)."""
 
-def get_greens(dist_dict, post_len, pre=200, vp=2.74, vs=1.4, dist_prec=2, source_type='moment',path = '/home/jes/data/Lab_Data/BP3_GF/',verbose=1):
-    """Version 0.0.0, highly unstable. Currently gets or makes GF for BP3 at 40Mhz only.
-    Get or compute greens functions. Uses parallel processing in matlab to compute new GF. Start a matlab session and parallel pool separately, then call matlab.engine.ShareEngine to save ~20s per call of this function.
-    Option to get the full length synthetic from source time to post_len-arr by setting pre=-1.
+import subprocess
+import obspy
+import warnings
+
+def get_greens(dists,test_dir):
+    """Get impulse response GF for the dists dict from the test_dir.
+    Will be updated with a default/deprecated test_dir input after tuning CPS parameters.
+    Returns gf as dict with stns from dists as keys. Each entry contains:
+    - imp: impulse response
+    - b: beginning of trace (s), relative to event origin
+    - a: direct P arrival (s)
+    - t0: direct S arrival (s)
+    - dt: sample step size (s) (inverse of Fs (Hz))
     """
+    gf = {}
+    for stn,d in dists.items():
+        try:
+            strm = obspy.read(f'{test_dir}/{d*100:06.0f}3850.ZVF')
+            gf[stn] = {'imp':np.diff(strm[0].data), 'b':strm[0].stats.sac['b'],
+                       'a':strm[0].stats.sac['a'], 't0':strm[0].stats.sac['t0'],
+                       'dt':strm[0].stats.sac['delta']}
+        except FileNotFoundError:
+            warnings.warn(f'GF not computed for distance {d:.2f}mm')
+    return gf
+
+def run_cps(test_dir, dt, npts, dists, vp = 2.74, vs = 1.4, qp = 4e3, qs = 1e3, frefp = 1e7, frefs = 1e7, vred=0, t0=0):
+    """Run CPS (hspec96) for the 38.5mm base plate in the name test_dir.
+    Dists in mm, velocities in mm/us, all others in s, Hz, etc.
+    """
+    subprocess.run(['mkdir', '-p', test_dir])
+
+    # write dist file
+    write_cps_dfile(test_dir, dists, dt, npts, vred=vred, t0=t0)
     
-    green = {}
-    calc_dists = []
-    fullpath = path + source_type + '/'
-    for d in dist_dict.values():
-        if not check_for_green(d, post_len, dist_prec, source_type, path):
-            calc_dists.append(d)
-           
-    # calculate any new (or too short) dists
-    calc_greens(calc_dists, post_len, vp=vp, vs=vs, dist_prec=dist_prec, source_type=source_type, path=path, verbose=verbose)
-    
-    # read in GF using h5py
-    for s,d in dist_dict.items():
-        fname = get_fname(d,dist_prec)
-        with h5py.File(fullpath+fname,'r') as f:
-            gdict = {}
-            # get first arrival from raytime
-            arr = round(f['Green']['raytime'][:].T[0,-1] * 40e6)
-            sl = slice(arr-pre,arr+post_len)
-            if pre == -1:
-                sl = slice(0,arr+post_len)
-            for k in f['Green'][source_type[0]].keys():
-                gdict[k] = np.squeeze(f['Green'][source_type[0]][k][sl])
-            green[s] = gdict
-     
-    return green
+    # write modfile
+    write_cps_model(test_dir, vp=vp, vs=vs, qp=qp, qs=qs, frefp=frefp, frefs=frefs)
 
-def get_raytime(dist, post_len, pre=200, vp=2.74, vs=1.4, dist_prec=2, source_type='moment', path = '/home/jes/data/Lab_Data/BP3_GF/', verbose=1):
-    """Get raytime matrix for one distance.
-    """
-    fullpath = path + source_type + '/'
-    if not check_for_green(dist, post_len, dist_prec, source_type, path):
-        raise ValueError('GF not calculated for these parameters.')
-    fname = get_fname(dist,dist_prec)
-    with h5py.File(fullpath+fname,'r') as f:
-        return f['Green']['raytime'][:].T
+    # write run script
+    write_cps_script(test_dir)
 
+    # run it
+    subprocess.run(f'{test_dir}/run_fk',cwd=test_dir)
 
-def calc_greens(dist_list: list, post_len, vp=2.74, vs=1.4, dist_prec=2, source_type='moment',path = '/home/jes/data/Lab_Data/BP3_GF/',verbose=1):
-    """Calculate greens functions for a list of distances.
-    """
-    calc_dists = []
-    fullpath = path + source_type + '/'
-    for d in dist_list:
-        # check for existing GF.mat files for each distance
-        fname = get_fname(d,dist_prec)
-        if not check_for_green(d, post_len, dist_prec, source_type, path):
-            # add distance to list of dists to compute
-            calc_dists.append(d)
+def write_cps_dfile(test_dir, dists, dt, npts, vred=0, t0=0):
+    """Write dist file for CPS run in test_dir.
+    Inputs:
+        - test_dir: full path to current test (str)
+        - dists: dict like {stn: d in mm}
+        - dt: sample spacing in s
+        - npts: int
+        - vred: reduction velocity in mm/us
+        - t0: amount to shift start from vred-based first arrival in s, likely negative
+        """
+    with open(test_dir+'/dfile','w') as f:
+        for d in dists.values():
+    #         r = np.sqrt(38.5**2+d**2)
+    #         us = r/1.4 + 5
+    #         npts = np.ceil(us/(1e6*dt))
+    #         if npts > max_pts: continue
+            # write dfile lines with modeling units: cm and s
+            f.write(f'{d:.2f}E-01\t{dt:.1E}\t{npts:n}\t{t0:.1E}\t{vred/10:.2E}\n')
             
-    # calculate any new (or too short) dists
-    if len(calc_dists) > 0:
-        if verbose: print(f'Calculating for {len(calc_dists)} stations...')
-        with matlab.engine.connect_matlab() as eng:
-            eng.eval("addpath('/home/jes/dev/PlateSoln')")
-            # set matlab variables for GF calc (can't just f-str them in)
-            eng.workspace['dists'] = matlab.double([float(d) for d in calc_dists]) # dists in mm, import lists using the matlab.double constructor
-            eng.workspace['cp'] = float(vp)
-            eng.workspace['cs'] = float(vs)
-            eng.workspace['post_len'] = float(post_len)
-            # calculate all GF
-            eval_string = f'mat_{source_type}_GF(cp,cs,dists,post_len,"{fullpath}",{verbose})'
-            done = eng.eval(eval_string)
-    else:
-        done = 1
-    
-    # make sure the function waited for matlab to finish (is this necessary?)
-    assert done == 1
-    
-    # just calculating, nothing to return
-    return
 
-def check_for_green(dist, post_len, dist_prec=2, source_type='moment',path = '/home/jes/data/Lab_Data/BP3_GF/'):
-    """Check if the requested greens function file exists and has enough points. Returns False if the file does not exist/is insufficient length.
-    """
-    skip = False
-    path += source_type + '/'
-    fname = get_fname(dist,dist_prec)
-    if path_exists(path+fname):
-            with h5py.File(path+fname,'r') as f:
-                # check length
-                if f['Green']['post_len'][0] >= post_len:
-                    skip = True
-    return skip
-         
+def write_cps_script(test_dir,h=38.5,pulse='p1'):
+    cps_bin = '/home/jes/dev/PROGRAMS.330/bin/'
+    pt = pulse[0]
+    l = pulse[1:]
+    with open(test_dir+'/run_fk','w') as f:
+        f.write('#!/bin/bash\n\n')
+        f.write('# prep\n')
+        f.write(f'{cps_bin}hprep96 -M modfile -d dfile -HS {h/10:.2E} -TF -BF -ALL\n\n')
+        f.write('# run\n')
+        f.write(f'{cps_bin}hspec96 -SU > hspec96.out\n\n')
+        f.write('# pulse\n')
+        f.write(f'{cps_bin}hpulse96 -{pt} -l {l} -D | {cps_bin}f96tosac -E\n')
+    subprocess.run(['chmod', '+x', f'{test_dir}/run_fk'])
     
-    
-    
-def get_fname(dist, dist_prec=2):
-    """Get the filename for a greens function distance.
-    """
-    d = np.round(dist,dist_prec)
-    a,b = str(float(d)).split('.')
-    # drop all trailing zeros after the decimal
-    while b!='' and b[-1] == '0':
-        b = b[:-1]
-    fname = f'{a}_{b}.mat'
-    return fname
+def write_cps_model(test_dir, h=38.5, vp=2.74, vs=1.4, rho=1.13, qp=4e3, qs=1e3, ep=0, es=0, frefp=1e7, frefs=1e7):
+    with open(test_dir+'/modfile','w') as f:
+        f.writelines([l+'\n' for l in ['MODEL.01', 'test plate in real units', 'ISOTROPIC', 'CGS',
+                      'FLAT EARTH', '1-D', 'CONSTANT VELOCITY',
+                      'LINE08', 'LINE09', 'LINE10', 'LINE11',
+                      '\tH(CM)\tVP(CM/S)\tVS(CM/S)\tRHO(GM/CC)\tQP\tQS\tETAP\tETAS\tFREFP\tFREFS\n']])
+        f.write(f'\t{h/10:.2E}\t{vp*1e5:.2E}\t{vs*1e5:.2E}\t{rho:.3f}\t'+
+                f'{qp:.2E}\t{qs:.2E}\t{ep:.2f}\t{es:.2f}\t{frefp:.1E}\t{frefs:.1E}\n')

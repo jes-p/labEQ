@@ -493,6 +493,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
         org = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].data[:]
         return org
 
+    def get_event_origin_index(self,event_id):
+        """Get location for event.
+        """
+        ev,tag,tr = self.get_event(event_id)
+        o_ind = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].parameters['o_ind']
+        if hasattr(o_ind,"__len__"): o_ind = o_ind[0]
+        return o_ind
+
     ######## content check ########
     def check_auxdata(self):
         """Report on presence of LabPicks and Origins, return True if both present.
@@ -534,30 +542,36 @@ class LabDataSet(pyasdf.ASDFDataSet):
     
     ######## get traces ########
     def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048, omit=True, select_stns=[]):
-        """Return a dict of short traces from a tag/trcnum based on picks. Omits un-picked traces."""
+        """Return a dict of short traces from a tag/trcnum based on picks. Omits un-picked traces by default."""
         if not tag:
             event_str,tag,trace_num = self.get_event(event_id)
         else:
             event_str = utils.parse_eid(event_id)
         traces = {}
         picks = self.get_event_picks(event_id)
-        if not omit:
-            dists = self.get_dists(event_id)
-        for stn, pp in picks.items():
-            if select_stns and stn not in select_stns: continue
-            if "L" in stn[:1]:
-                stn = stn[3:]  # deal with existing picks having dumb station names
-            pp = pp[0]
-            if pp == -1: 
-                if omit:
-                    continue
-                else:
-                    # use dist (mm) to get path length
-                    travel = np.sqrt(dists[stn]**2 + 38.5**2)
-                    event_ind = self.auxiliary_data.Origins[tag][f'tr{trace_num}'][event_str].parameters['o_ind']
-                    pp = int(travel/2.74 * 40) + event_ind[0]
-            sl = slice(pp - pre, pp - pre + tot_len)
-            traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
+        o_ind = self.get_event_origin_index(event_id)
+        if pre == -1: # don't care about picks at all
+            sl = slice(o_ind,o_ind+tot_len)
+            if not select_stns: select_stns = self.stns
+            for stn in select_stns:
+                traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
+        else:
+            if not omit:
+                dists = self.get_dists(event_id)
+            for stn, pp in picks.items():
+                if select_stns and stn not in select_stns: continue
+                if "L" in stn[:1]:
+                    stn = stn[3:]  # deal with existing picks having dumb station names
+                pp = pp[0]
+                if pp == -1: 
+                    if omit:
+                        continue
+                    else:
+                        # use dist (mm) to get path length
+                        travel = np.sqrt(dists[stn]**2 + 38.5**2)
+                        pp = int(travel/2.74 * 40) + o_ind
+                sl = slice(pp - pre, pp - pre + tot_len)
+                traces[stn] = self.waveforms["L0_" + stn][tag][trace_num].data[sl]
         return traces
 
     def get_trace_picks(self, tag, trace_num):
