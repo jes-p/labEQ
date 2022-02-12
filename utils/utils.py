@@ -91,7 +91,7 @@ def subplts(row, col, titles="default"):
     )
     return fig, plotkey
 
-def grid_plot(plot_data: dict, plot_file_name, legend=True, number_plots=False):
+def grid_plot(plot_data: dict, plot_file_name, legend=True, number_plots=False, plot_titles=False, fig_title=False):
     """Make and save a 4x4 plotly plot. Takes a dict like {plot title: [items to plot]} and file name to save the figure. Items should be a list of dicts of keyword args accepted by go.Scattergl. Doesn't return the figure.
     Useful Scattergl keywords:
         y: required, no default (all others optional)
@@ -99,10 +99,13 @@ def grid_plot(plot_data: dict, plot_file_name, legend=True, number_plots=False):
         name: legend entry for trace
         legendgroup: groups legend items to toggle together (e.g. 'Raw', 'Preprocess', 'New Picks', etc.)
         """
-    if number_plots:
-        titles = [stn+f" ({i})" for i,stn in enumerate(plot_data.keys())]
+    if not plot_titles:
+        if number_plots:
+            titles = [stn+f" ({i})" for i,stn in enumerate(plot_data.keys())]
+        else:
+            titles = plot_data.keys()
     else:
-        titles = plot_data.keys()
+        titles = plot_titles
     fig,plotkey = subplts(4,4,titles)
     color_list = ['black', 'red', 'blue', 'green', 'orange', 'magenta', 'gray']
     ncol = len(color_list)
@@ -124,5 +127,12 @@ def grid_plot(plot_data: dict, plot_file_name, legend=True, number_plots=False):
     # finish figure
     if not legend:
         fig["layout"].update(showlegend=False)
+    if fig_title:
+        fig.update_layout(title=fig_title)
+    fig.update_annotations(font_size=12)
     fig.write_html(plot_file_name + '.html')
-    print(f'Plotted {os.getcwd()}/{plot_file_name}.html')
+    if plot_file_name[0] == '/':
+        pdir = ''
+    else:
+        pdir = os.getcwd() + '/'
+    print(f'Plotted {pdir+plot_file_name}.html')
