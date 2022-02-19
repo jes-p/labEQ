@@ -4,7 +4,7 @@ import subprocess
 import obspy
 import warnings
 
-def get_greens(dists,test_dir):
+def get_greens(dists,test_dir,resp='ZVF'):
     """Get impulse response GF for the dists dict from the test_dir.
     Will be updated with a default/deprecated test_dir input after tuning CPS parameters.
     Returns gf as dict with stns from dists as keys. Each entry contains:
@@ -17,7 +17,7 @@ def get_greens(dists,test_dir):
     gf = {}
     for stn,d in dists.items():
         try:
-            strm = obspy.read(f'{test_dir}/{d*100:06.0f}3850.ZVF')
+            strm = obspy.read(f'{test_dir}/{d*100:06.0f}3850.{resp}')
             gf[stn] = {'step':strm[0].data, 'b':strm[0].stats.sac['b'],
                        'a':strm[0].stats.sac['a'], 't0':strm[0].stats.sac['t0'],
                        'dt':strm[0].stats.sac['delta']}
@@ -25,7 +25,7 @@ def get_greens(dists,test_dir):
             warnings.warn(f'GF not computed for distance {d:.2f}mm',stacklevel=2)
     return gf
 
-def run_cps(test_dir, dt, npts, dists, vp = 2.74, vs = 1.4, qp = 4e3, qs = 1e3, frefp = 1e7, frefs = 1e7, etap=0.0, etas=0.0, vred=0, t0=0, qk=False):
+def run_cps(test_dir, dt, npts, dists, vp = 2.74, vs = 1.33, qp = 4e3, qs = 25, frefp = 1e7, frefs = 1e4, etap=0.0, etas=0.0, vred=0, t0=0, qk=False):
     """Run CPS (hspec96) for the 38.5mm base plate in the name test_dir.
     Dists in mm, velocities in mm/us, all others in s, Hz, etc.
     """

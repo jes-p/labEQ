@@ -18,8 +18,42 @@ sys.path.append(home+'dev/')
 
 from ..utils import utils, green
 
-# import GF accessor. or maybe don't, just require GF as arg and deal outside
-# no, I'd like to have pointsource handle requesting the right GF from the accessor
+
+def forward_force(ds,ev,gf_dir,pre=5,post=80,force_func=None,band=[5e4,4e6],force_vec=[0,0,1]):
+    """
+    TODO: this doesn't really belong here as is. break down into... just producing a forward model without matching traces? Need to think about the goal and the modular pieces getting there.
+    Forward model force-source synthetics for event geometry. pre and post in us.
+    Returns identically processed traces to match.
+    Pre-arrival signal is assumed (and forced) to be identically zero.
+    """
+    # get traces to match
+    trcs = ds.get_event_traces(ev, pre=0, omit=True, tot_len=3500) # extra length for filtering
+    # get dists, sort stns, full gf
+    dists = ds.get_dists(ev)
+    sort_stns = sorted(dists.keys(), key=lambda k: dists[k])
+    sort_stns = [s for s in sort_stns if s in trcs.keys()]
+    gf = green.get_greens(dists,gf_dir)
+    # pull raw step gf
+    synths = {stn:gf[stn]['step']*1e3 for stn in sort_stns}
+    # add any force function
+    if hasattr(force_func,'__len__'):
+        synths = {stn:np.convolve(np.diff(syn),force_func)
+                  for stn,syn in synths.items()}
+    # filter
+    dt = gf[sort_stns[0]]['dt']
+    ppus = int(np.round(1/(dt*1e6))) # points per microsecond
+    npost = int(post*ppus)
+    sos = signal.iirfilter(2,np.array(band)*dt*2,output='sos')
+    pad = np.zeros(int(pre*ppus,))
+    for stn,syn in synths.items():    
+        arr = int(gf[stn]['a']/dt)
+        filt_syn = signal.sosfiltfilt(sos,syn[arr:arr+npost]-syn[arr])*-1
+        dec_trc = signal.decimate(trcs[stn],int(np.round(40e6*dt)))
+        filt_trc = signal.sosfiltfilt(sos,dec_trc[:npost]-dec_trc[0])
+        # zero and pad
+        synths.update({stn: np.concatenate((pad, filt_syn - filt_syn[0]))})
+        trcs.update({stn: np.concatenate((pad, filt_trc - filt_trc[0]))})
+    return synths,trcs
 
 def ball_forward(ds, event_id, pre=200, tot_len=2048, diam=0.75e-3, plot_title=''):
     """Produce forward models for a ball drop. Plot is plot_title is given. Return dict of synthetics.

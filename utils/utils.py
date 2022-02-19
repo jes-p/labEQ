@@ -30,6 +30,17 @@ def xcorr_shift(base,model):
     lags = signal.correlation_lags(len(model), len(base), mode='same')
     return lags[np.argmax(corr)], np.max(acorr)/np.max(corr)
 
+def xcorr_coeff(base,model):
+    """Get the correlation coefficient for the model compared to base, with zero shift.
+    """
+    l = len(base)
+    if len(model) != l:
+        raise ValueError("Model and base must be the same length")
+    base_acorr = signal.correlate(base, base)[l-1]
+    model_acorr = signal.correlate(model, model)[l-1]
+    xcorr = signal.correlate(model, base)[l-1]
+    return xcorr**2/(base_acorr*model_acorr)
+    
 def calc_sptime(dist,vp=2.74,vs=1.4,output='points'):
     """Find the theoretical S-P time for an epicentral distance, in mm.
     Output in sample points (points) or microseconds (us).
