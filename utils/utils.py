@@ -7,6 +7,8 @@ from scipy import signal
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# Import erfc for fspec_coeff
+from scipy.special import erfc
 
 def parse_eid(event_id):
     """Parse an event_str or integer event_num input into the event_str"""
@@ -21,14 +23,26 @@ def vr(base,model):
     """
     return (1-np.sum(np.power(base-model,2))/np.sum(np.power(base,2)))*100
 
-def xcorr_shift(base,model):
-    """Get offset and scale factor between base and model based on cross-correlation. Lag is given as model compared to base. Positive output indicates that the model arrives late. E.g. lag = 12 will be aligned by slicing model[12:].
+def xcorr_shift(base,model,scale=False,partial=None):
+    """ UPDATE: return shifted (and optionally scaled) version of model
+    Get offset and scale factor between base and model based on cross-correlation. Lag is given as model compared to base. Positive output indicates that the model arrives late. E.g. lag = 12 will be aligned by slicing model[12:].
     Scale factor is also model compared to base. Multiply the model by the scale factor for the best fit.
     """
-    acorr = signal.correlate(base, base, mode='same')
-    corr = signal.correlate(model, base, mode='same')
-    lags = signal.correlation_lags(len(model), len(base), mode='same')
-    return lags[np.argmax(corr)], np.max(acorr)/np.max(corr)
+    if not partial:
+        partial = len(base)
+    acorr = signal.correlate(base[:partial], base[:partial], mode='same')
+    corr = signal.correlate(model[:partial], base[:partial], mode='same')
+    lags = signal.correlation_lags(len(model[:partial]), len(base[:partial]), mode='same')
+    shift = lags[np.argmax(corr)]
+    pad = np.zeros(np.abs(shift))
+    fac = np.max(acorr)/np.max(corr)
+    if not scale: fac = 1
+    if shift >= 0:
+        out = np.concatenate((fac*model[shift:],pad))
+    else:
+        out = np.concatenate((pad,fac*model[:shift]))
+    # return lags[np.argmax(corr)], np.max(acorr)/np.max(corr)
+    return out
 
 def xcorr_coeff(base,model):
     """Get the correlation coefficient for the model compared to base, with zero shift.
@@ -39,7 +53,30 @@ def xcorr_coeff(base,model):
     base_acorr = signal.correlate(base, base)[l-1]
     model_acorr = signal.correlate(model, model)[l-1]
     xcorr = signal.correlate(model, base)[l-1]
-    return xcorr**2/(base_acorr*model_acorr)
+    return xcorr**2/(base_acorr*model_acorr) * 100
+
+def fspec_coeff(base,model,smooth=10,fmax=None,dt=1e-7,log=False):
+    """Get an amplitude-based fit coefficient for the model compared to base. The fourier spectra are smoothed by a moving average and only compared up to fmax.
+    """
+    nf = len(base)
+    if len(model) != nf: raise ValueError('Model and base must be the same length')
+    bspec = np.abs(np.fft.rfft(base)[:-1])
+    mspec = np.abs(np.fft.rfft(model)[:-1])
+    ff = np.fft.fftfreq(nf,d=dt)[:nf//2]
+    # smoothing
+    box = np.ones(smooth)/smooth
+    sbs = np.convolve(bspec,box,mode='same')
+    sms = np.convolve(mspec,box,mode='same')
+    if log:
+        sbs = np.log10(sbs)
+        sms = np.log10(sms)
+    snr = 2 * np.abs((sbs-sms)/(sbs+sms)) # normalized residuals
+    if fmax:
+        cut = np.argwhere(ff>fmax)[0,0]-1
+    else:
+        cut = len(ff)
+    score = 100 * np.sum(erfc(snr[:cut]))/cut
+    return score
     
 def calc_sptime(dist,vp=2.74,vs=1.4,output='points'):
     """Find the theoretical S-P time for an epicentral distance, in mm.
