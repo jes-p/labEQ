@@ -23,8 +23,10 @@ def vr(base,model):
     """
     return (1-np.sum(np.power(base-model,2))/np.sum(np.power(base,2)))*100
 
-def xcorr_shift(base,model,scale=False,partial=None):
+def xcorr_shift(base,model,scale=False,partial=None,maxshift=-1):
     """ UPDATE: return shifted (and optionally scaled) version of model
+    maxshift parameter is in absolute sample points
+    checks for negative correlation in case model is opposite polarity from base
     Get offset and scale factor between base and model based on cross-correlation. Lag is given as model compared to base. Positive output indicates that the model arrives late. E.g. lag = 12 will be aligned by slicing model[12:].
     Scale factor is also model compared to base. Multiply the model by the scale factor for the best fit.
     """
@@ -33,10 +35,16 @@ def xcorr_shift(base,model,scale=False,partial=None):
     acorr = signal.correlate(base[:partial], base[:partial], mode='same')
     corr = signal.correlate(model[:partial], base[:partial], mode='same')
     lags = signal.correlation_lags(len(model[:partial]), len(base[:partial]), mode='same')
+    # get shift, checking for negative correlation from reverse-polarity signals
+    if np.trapz(corr) < 0:
+        corr = corr * -1
     shift = lags[np.argmax(corr)]
+    if maxshift > 0 and np.abs(shift) > maxshift:
+        shift = (np.abs(shift)//shift) * maxshift # apply sign of too large shift to maxshift
     pad = np.zeros(np.abs(shift))
     fac = np.max(acorr)/np.max(corr)
     if not scale: fac = 1
+    #shift = shift * -1
     if shift >= 0:
         out = np.concatenate((fac*model[shift:],pad))
     else:
