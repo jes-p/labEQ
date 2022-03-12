@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import numpy as np
+from scipy import signal
 
 # Imports for picking
 import peakutils
@@ -212,13 +213,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
         return old_picks
 
     def plot_picks(
-        self, tag, trace_num, view_mid, view_len, new_picks=None, figname="picks_plot"
+        self, tag, trace_num, view_mid, view_len, new_picks=None, figname="picks_plot", band=[1e3/20e6, 4e6/20e6]
     ):
         """Produce an interactive plot of traces with numbered picks, and existing picks if present.
         Assumes 16 sensors.
         TODO: old_picks markers are too big
         """ 
         start,stop = [int(view_mid - view_len/2), int(view_mid + view_len/2)]
+        sos = signal.iirfilter(2, band, output='sos')
 
         # are there existing picks?
         # they would be stored as events so are there events?
@@ -235,13 +237,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
             plot_data[stn] = []
             # plot trace
             trc = self.waveforms["L0_" + stn][tag][trace_num].data
+            trc = signal.sosfiltfilt(sos,trc)
             plot_data[stn].append({'y':trc[start : stop],'legendgroup':'traces','name':'raw trace'})
             
             # plot existing picks, if any in window
             if plot_op:
                 for ev in trc_events:
                     ev_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][ev].parameters
-                    if ev_picks[stn][0] > start:
+                    if len(new_picks[stn]) > 0 and ev_picks[stn][0] > start:
                         plot_data[stn].append({'x':np.array(ev_picks[stn]) - start,
                                                'y':trc[ev_picks[stn]],
                                                'mode':"markers",
@@ -251,7 +254,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
             # plot new picks, if any in window
             if new_picks:
-                if new_picks[stn][0] > start:
+                if len(new_picks[stn]) > 0 and new_picks[stn][0] > start:
                     plot_data[stn].append({'x':np.array(new_picks[stn]) - start,
                                            'y':trc[new_picks[stn]],
                                            'mode':"markers+text",
@@ -265,7 +268,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
         print(f"Picks plot written to {figname}.html")
 
     def interactive_check_picks(
-        self, tag, trace_num, event_id='', picks=None, view_mid=180000, view_len=40000, auto_pick_params={}):
+        self, tag, trace_num, event_id='', picks=None, view_mid=180000, view_len=40000, band=[1e3/20e6, 4e6/20e6], auto_pick_params={}):
         """Plot picks for all stations for one (tag,trcnum) and accept user adjustments.
         Auto-picks if no picks are provided or already stored (by noise, only appropriate for very clean signals).
         TODO: my notes imply that plotly is now interactive enough that I could replot after each input
@@ -274,6 +277,9 @@ class LabDataSet(pyasdf.ASDFDataSet):
         event_str = utils.parse_eid(event_id)
         stns = self.stns  # TODO: is this necessary?
         start = int(view_mid - view_len/2)
+        
+        # make a filter to remove highest freq. noise and lowest freq. ringing
+        sos = signal.iirfilter(2, band, output='sos')
 
         # auto-pick if necessary
         # check for existing picks on the trace
@@ -291,17 +297,18 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 print("Plotting new event with auto_pick_by_noise")
                 for stn in stns:
                     trc = self.waveforms["L0_" + stn][tag][trace_num].data
+                    trc = signal.sosfiltfilt(sos,trc)
                     picks[stn] = auto_pick_by_noise(trc, **auto_pick_params)
             else:
                 picks = trc_picks[-1]
                 event_str = trc_events[-1]
                 print(f"Plotting picks for {event_str}")
-        self.plot_picks(tag, trace_num, view_mid, view_len, picks)
+        self.plot_picks(tag, trace_num, view_mid, view_len, picks, band=band)
 
         # ask for inputs
         print(
             "Adjustment actions available: s for select pick, r for repick near, m for"
-            " manual pick"
+            " manual pick, d for drop pick(s)"
         )
         print("Enter as [chan][action key][index], e.g. s0 to select pick 0")
         adjust = input("Adjust a channel? - to exit: ")
@@ -324,7 +331,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 # pick near somewhere else
                 trc = self.waveforms["L0_" + stns[chan]][tag][trace_num].data
                 # check for rl,rr specification TODO: prob a better way to parse input
-                rl,rr = [2000,2000]
+                rl,rr = [500,500]
                 try:
                     num = int(rest)
                 except: # letters included in remaining part
@@ -352,6 +359,10 @@ class LabDataSet(pyasdf.ASDFDataSet):
                     picks[stns[chan]] = [-1]
                 else:
                     picks[stns[chan]] = [num + start]
+            elif action == "d":
+                # set station/event to no picks with -1
+                # TODO empty list would be better but then I'd have a bunch of logic to update
+                picks[stns[chan]] = [-1]
             # move to next adjustment or exit
             adjust = input("Adjust a channel? - to exit: ")
 
@@ -372,16 +383,35 @@ class LabDataSet(pyasdf.ASDFDataSet):
         old_picks = self.add_picks(event_str, tag, trace_num, picks)
         return old_picks
     
+    def drop_picks(self, event_id, chan_nums):
+        """Adjust picks to -1 for a list of channels. Useful for smaller events with many unpickable channels.
+        """
+        event_str,tag,trace_num = self.get_event(event_id)
+        drops = [self.stns[i] for i in chan_nums]
+        print(f'Preparing to drop picks for event {event_str} from stations {drops}')
+        conf = input('y to confirm')
+        if conf=='y':
+            # drop picks
+            picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+            for stn in drops:
+                picks.update({stn:[-1]})
+            old_picks = self.add_picks(event_str, tag, trace_num, picks)
+        else:
+            print('aborted')
+        return old_picks
+    
     def pick_all_near(
-        self, tag, trace_num, near, reach_left=2000, reach_right=2000, thr=0.9
+        self, tag, trace_num, near, reach_left=2000, reach_right=2000, thr=0.9, band=[1e3/20e6, 4e6/20e6]
     ):
         """Run pick_near on all stations for one tag/trcnum at once. Return dict
         of picks to run through interactive_check_picks."""
         # no need to check for old picks now, add_picks will do that
         # run pick_near for each stn
         picks = {}
+        sos = signal.iirfilter(2, band, output='sos')
         for i, stn in enumerate(self.stns):
             trc = self.waveforms["L0_" + stn][tag][trace_num].data[near-reach_left:near+reach_right]
+            trc = signal.sosfiltfilt(sos,trc)
             picks[stn] = pick_near(trc, reach_left, reach_left, reach_right, thr, AIC=[])
             picks[stn] = [p+near-reach_left for p in picks[stn]]
         
@@ -443,18 +473,22 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 except:
                     self.update_event(event_str, Origins=path)
 
-    def locate_event(self, event_id, vp=2.74):
+    def locate_event(self, event_id, vp=2.74, save=True, picks=None):
         """Locate an event. vp in mm/us. Note that stn_locs are in cm but vp is converted.
+        Returns model, origin index (rel. to start of trace), cov matrix.
+        Defaults to saving the location for the event but won't overwrite.
+        Option to provide a limited picks dict instead of using what's saved.
         """
         import scipy.optimize as opt
 
         event_str,tag,trace_num = self.get_event(event_id)
 
-        picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+        if not picks:
+            picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
         # associate locations
-        xys = [self.stat_locs[stn][:2] for stn in self.stns if picks[stn][0] > 0]
+        xys = [self.stat_locs[stn][:2] for stn in picks.keys() if picks[stn][0] > 0]
         # picks to times
-        arrivals = [picks[stn][0] / 40 for stn in self.stns if picks[stn][0] > 0]
+        arrivals = [picks[stn][0] / 40 for stn in picks.keys() if picks[stn][0] > 0]
         # sort xys and arrivals by arrival
         xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
         # get fitting function
@@ -469,15 +503,55 @@ class LabDataSet(pyasdf.ASDFDataSet):
             bounds=(0, [500, 500, 50]),
         )
         o_ind = [int((arrivals[0] - model[-1]) * 40)]
-        path = f"{tag}/tr{trace_num}/{event_str}"
-        self.add_auxiliary_data(
-            data=model[:2],
-            data_type="Origins",
-            path=path,
-            parameters={"o_ind": o_ind, "cov": cov},
-        )
+        if save:
+            path = f"{tag}/tr{trace_num}/{event_str}"
+            self.add_auxiliary_data(
+                data=model[:2],
+                data_type="Origins",
+                path=path,
+                parameters={"o_ind": o_ind, "cov": cov},
+            )
+        return model,o_ind,cov
         
+    def jk_loc(self, event_id, vp=2.74):
+        """Run location for event with sub-sample of picks. Return arrival times for least error or user-chosen model.
+        """
+        event_str,tag,trace_num = self.get_event(event_id)
+        all_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+        # remove one pick from each location
+        locs = []
+        for i,stn in enumerate(all_picks.keys()):
+            picks = {s:p for s,p in all_picks.items() if s != stn}
+            locs.append((i,self.locate_event(event_id,save=False,picks=picks)))
+        # print table of results
+        print('n\t x\t y\t xerr\t terr\t')
+        for n,l in locs:
+            print(f'{n}\t {l[0][0]:.1f}\t {l[0][1]:.1f}\t {l[2][0,0]:.1f}\t {l[2][-1,-1]:.1f}\t ')
+        # ask which result to return
+        req = input('Select result')
+        if req == 't':
+            # return lowest time error
+            li = sorted(locs,key=lambda l:l[1][2][-1,-1])[0][0] 
+        elif req == 'x':
+            # return lowest x error
+            li = sorted(locs,key=lambda l:l[1][2][0,0])[0][0] 
+        else:
+            # assume integer selection was made
+            li = int(req)
+            
+        # return calculated arrivals for this origin as picks dict
+        return self.calc_arrivals(locs[li][1][0],locs[li][1][1][0])
 
+    def calc_arrivals(self,org,o_ind):
+        """Get a picks dict of modeled arrival indices for all stations based on given location.
+        """
+        picks = {}
+        for stn,sloc in self.stat_locs.items():
+            dx,dy = [sloc[i]-org[i] for i in range(2)]
+            travel = np.sqrt(dx**2 + dy**2 + 38.5**2)
+            picks[stn] = [int(travel/2.74 * 40) + o_ind]
+        return picks
+        
     def get_dists(self,event_id,prec=2):
         """Get epicentral station distances for an event, in mm.
            org and stat_locs in cm, dists returned in mm, rounded to two places by default
