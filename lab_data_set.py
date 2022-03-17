@@ -244,7 +244,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
             if plot_op:
                 for ev in trc_events:
                     ev_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][ev].parameters
-                    if len(new_picks[stn]) > 0 and ev_picks[stn][0] > start:
+                    if len(ev_picks[stn]) > 0 and ev_picks[stn][0] > start:
                         plot_data[stn].append({'x':np.array(ev_picks[stn]) - start,
                                                'y':trc[ev_picks[stn]],
                                                'mode':"markers",
@@ -254,7 +254,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
 
             # plot new picks, if any in window
             if new_picks:
-                if len(new_picks[stn]) > 0 and new_picks[stn][0] > start:
+                if len(new_picks[stn]) > 0 and new_picks[stn][0] and new_picks[stn][0] > start:
                     plot_data[stn].append({'x':np.array(new_picks[stn]) - start,
                                            'y':trc[new_picks[stn]],
                                            'mode':"markers+text",
@@ -361,7 +361,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
                     picks[stns[chan]] = [num + start]
             elif action == "d":
                 # set station/event to no picks with -1
-                # TODO empty list would be better but then I'd have a bunch of logic to update
+                # TODO empty list would be better but then I'd have a bunch of logic to update (forced myself to start making both work for now)
                 picks[stns[chan]] = [-1]
             # move to next adjustment or exit
             adjust = input("Adjust a channel? - to exit: ")
@@ -486,9 +486,11 @@ class LabDataSet(pyasdf.ASDFDataSet):
         if not picks:
             picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
         # associate locations
-        xys = [self.stat_locs[stn][:2] for stn in picks.keys() if picks[stn][0] > 0]
+        xys = [self.stat_locs[stn][:2] for stn in picks.keys()
+               if len(picks[stn]) > 0 and picks[stn][0] > 0]
         # picks to times
-        arrivals = [picks[stn][0] / 40 for stn in picks.keys() if picks[stn][0] > 0]
+        arrivals = [picks[stn][0] / 40 for stn in picks.keys()
+                    if len(picks[stn]) > 0 and picks[stn][0] > 0]
         # sort xys and arrivals by arrival
         xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
         # get fitting function
@@ -512,12 +514,57 @@ class LabDataSet(pyasdf.ASDFDataSet):
                 parameters={"o_ind": o_ind, "cov": cov},
             )
         return model,o_ind,cov
+    
+    def locate_picks(self, picks, vp=2.74):
+        """Locate an event based on given picks dict. vp in mm/us. Note that stn_locs are in cm but vp is converted.
+        Now handles picks dict with direct values or lists.
+        Returns model, origin index (rel. to start of trace), cov matrix.
+        """
+        import scipy.optimize as opt
+
+        # process picks
+        xys,arrivals = [[],[]]
+        for stn,pk in picks.items():
+            if hasattr(pk,'__len__'):
+                if len(pk) > 0 and pk[0] and pk[0] > 0: # [], [[]], and [-1] all in use as non-picks
+                    xys.append(self.stat_locs[stn][:2])
+                    arrivals.append(pk[0]/40)
+            else:
+                if pk > 0:
+                    xys.append(self.stat_locs[stn][:2])
+                    arrivals.append(pk/40)
+                    
+        # # associate locations
+        # xys = [self.stat_locs[stn][:2] for stn in picks.keys()
+        #        if len(picks[stn]) > 0 and picks[stn][0] > 0]
+        # # picks to times
+        # arrivals = [picks[stn][0] / 40 for stn in picks.keys()
+        #             if len(picks[stn]) > 0 and picks[stn][0] > 0]
+        
+        # sort xys and arrivals by arrival
+        xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
+        # get fitting function
+        def curve_func_cm(X, a, b, c):
+            t = np.sqrt((X[0] - a) ** 2 + (X[1] - b) ** 2 + 3.85 ** 2) / (vp/10) - c
+            return t
+        # run the nonlinear least squares
+        try:
+            model, cov = opt.curve_fit(
+                curve_func_cm,
+                np.array(xys).T,
+                np.array(arrivals) - arrivals[0],
+                bounds=(0, [500, 500, 50]),
+            )
+        except RuntimeError:
+            return [],[],[[100]] # stand-in outputs to fail a cov check
+        
+        o_ind = [int((arrivals[0] - model[-1]) * 40)]
+        return model,o_ind,cov
         
     def jk_loc(self, event_id, vp=2.74):
         """Run location for event with sub-sample of picks. Return arrival times for least error or user-chosen model.
         """
-        event_str,tag,trace_num = self.get_event(event_id)
-        all_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+        all_picks = self.get_event_picks(event_id)
         # remove one pick from each location
         locs = []
         for i,stn in enumerate(all_picks.keys()):
@@ -547,7 +594,7 @@ class LabDataSet(pyasdf.ASDFDataSet):
         """
         picks = {}
         for stn,sloc in self.stat_locs.items():
-            dx,dy = [sloc[i]-org[i] for i in range(2)]
+            dx,dy = [10*(sloc[i]-org[i]) for i in range(2)]
             travel = np.sqrt(dx**2 + dy**2 + 38.5**2)
             picks[stn] = [int(travel/2.74 * 40) + o_ind]
         return picks
@@ -662,14 +709,14 @@ class LabDataSet(pyasdf.ASDFDataSet):
 ######## picking helpers ########
 # TODO move these to a picking module
 
-def pick_near(trace, near, reach_left=2000, reach_right=2000, thr=0.9, AIC=[]):
+def pick_near(trace, near, reach_left=2000, reach_right=2000, thr=0.9, AIC=[], trace_start=0):
     """Get a list of picks for one trace."""
     if len(AIC) == 0:
         AIC = get_AIC(trace, near, reach_left, reach_right)
     picks = (
         peakutils.indexes(AIC[5:-5] * (-1), thres=thr, min_dist=50) + 5
     )  # thres works better without zeros
-    picks = list(picks + (near - reach_left))  # window indices -> trace indices
+    picks = list(picks + (near - reach_left) + trace_start)  # window indices -> trace indices
     # TODO: Do I need to remove duplicates and sort?
     return picks
 
