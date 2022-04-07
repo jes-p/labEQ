@@ -133,7 +133,11 @@ class LabDataSet(pyasdf.ASDFDataSet):
     Object handling special Lab ASDF files and operations.
     """
 
-    def add_event(self, tag, trace_num):
+    def add_event(self, tag='', trace_num='', info={}, subpaths=True):
+        """Add event to dataset under LabEvents aux data.
+        Switching from using the event directly (still the case in calibration sets) to using subpaths of it (new default).
+        If using subpaths, include info parameters dict (tag,trace,etc).
+        """
         try:
             events = self.auxiliary_data.LabEvents.list()
             events.sort() # likely redundant
@@ -142,10 +146,17 @@ class LabDataSet(pyasdf.ASDFDataSet):
             # create first event
             next_ev = 0
         event_str = f'event_{next_ev:0>3d}'
-        self.add_auxiliary_data(data=np.array([]),
-                                data_type="LabEvents",
-                                path=event_str,
-                                parameters={'tag':tag, 'trace_num':trace_num})
+        if not subpaths: # use old convention
+            self.add_auxiliary_data(data=np.array([]),
+                                    data_type="LabEvents",
+                                    path=event_str,
+                                    parameters={'tag':tag, 'trace_num':trace_num})
+        else:
+            self.add_auxiliary_data(data=np.array([]),
+                                    data_type="LabEvents",
+                                    path=f'{event_str}/info',
+                                    parameters=info)
+        print(f'Added {event_str}')
         return event_str
     
     def add_local_locations(self, statxml_filepath):
@@ -192,27 +203,61 @@ class LabDataSet(pyasdf.ASDFDataSet):
         )
 
     ######## picking methods of object ########
-    def add_picks(self, event_id, tag, trace_num, picks):
+    def add_picks(self, event_id, picks, tag=None, trace_num=None):
         """Add a dict of picks for a (tag,trcnum) path.
         Picks in the form {stn:[picks]}
         Returns any overwritten picks as a safety."""
-        event_str = utils.parse_eid(event_id)
+        if not tag:
+            event_str,tag,trace_num = self.get_event(event_id)
+        else:
+            event_str = utils.parse_eid(event_id)
         # check for old_picks to overwrite
-        try:
-            old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
-            del self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str]
-        except:
-            old_picks = {}
-        path = f"{tag}/tr{trace_num}/{event_str}"
-        self.add_auxiliary_data(
-            data=np.array([]),
-            data_type="LabPicks",
-            path=path,
-            parameters=picks,
-        )
+        if 'LabPicks' in self.auxiliary_data.list():
+            try:
+                old_picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+                del self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str]
+            except:
+                old_picks = {}
+            path = f"{tag}/tr{trace_num}/{event_str}"
+            self.add_auxiliary_data(
+                data=np.array([]),
+                data_type="LabPicks",
+                path=path,
+                parameters=picks,
+            )
+        else: # new subpath organization
+            if 'picks' in self.auxiliary_data.LabEvents[event_str].list():
+                old_picks = self.auxiliary_data.LabEvents[event_str].picks.parameters
+                del self.auxiliary_data.LabEvents[event_str].picks
+            self.add_auxiliary_data(
+                data=np.array([]),
+                data_type="LabEvents",
+                path=event_str+'/picks',
+                parameters=picks,
+            )
         return old_picks
 
-    def plot_picks(
+    def add_picks_subpath(self, event_id, picks):
+        """Add dict of picks under a LabEvents/event path.
+        Assumes new event and will not overwrite.
+        """
+        event_str = utils.parse_eid(event_id)
+        self.add_auxiliary_data(data=np.array([]),
+                                data_type='LabEvents',
+                                path=f'{event_str}/picks',
+                                parameters=picks)
+        
+    def add_location_subpath(self, event_id, location, origin_index, cov_res):
+        """Add location information under a LabEvents/event path.
+        Assumes new event and will not overwrite.
+        """
+        event_str = utils.parse_eid(event_id)
+        self.add_auxiliary_data(data=np.array([]),
+                                data_type='LabEvents',
+                                path=f'{event_str}/location',
+                                parameters={'loc':location, 'o_ind':origin_index, 'cov':cov_res})
+        
+    def plot_picks_LabPicks(
         self, tag, trace_num, view_mid, view_len, new_picks=None, figname="picks_plot", band=[1e3/20e6, 4e6/20e6]
     ):
         """Produce an interactive plot of traces with numbered picks, and existing picks if present.
@@ -267,8 +312,93 @@ class LabDataSet(pyasdf.ASDFDataSet):
         grid_plot(plot_data,figname,number_plots=True)
         print(f"Picks plot written to {figname}.html")
 
+        
+    def plot_picks(
+        self, tag, trace_num, view_mid, view_len, new_picks=None, figname="picks_plot", band=[1e3/20e6, 4e6/20e6]
+    ):
+        """Produce an interactive plot of traces with numbered picks, and existing picks if present.
+        Assumes 16 sensors.
+        Updated to 
+        """ 
+        start,stop = [int(view_mid - view_len/2), int(view_mid + view_len/2)]
+        sos = signal.iirfilter(2, band, output='sos')
+
+        # are there existing events on this trace?
+        plot_op = 0 # default
+        if tag in self.auxiliary_data.EventIndex.list():
+            tn = f'tr{trace_num}'
+            if tn in self.auxiliary_data.EventIndex[tag].parameters.keys():
+                trc_events = self.auxiliary_data.EventIndex[tag].parameters[tn]
+                plot_op = 1 # need to check for picks to plot from trc_events
+
+        plot_data = {}
+        for stn in self.stns:
+            plot_data[stn] = []
+            # plot trace
+            trc = self.waveforms["L0_" + stn][tag][trace_num].data
+            trc = signal.sosfilt(sos,trc)
+            plot_data[stn].append({'y':trc[start : stop],'legendgroup':'traces','name':'raw trace'})
+            
+            # plot existing picks, if any in window
+            if plot_op:
+                for ev in trc_events:
+                    if 'picks' in self.auxiliary_data.LabEvents[ev].list():
+                        try:
+                            pk = self.auxiliary_data.LabEvents[ev].picks.parameters[stn]
+                        except KeyError:
+                            pk = []
+                        # parse many current forms of pick storage
+                        if not hasattr(pk,'__len__'):
+                            pk = [pk]
+                        # now pk is a list but might still be empty/-1/out of range
+                        if len(pk) > 0 and pk[0] > start and pk[-1] < stop:
+                            plot_data[stn].append({'x':np.array(pk) - start,
+                                                   'y':trc[pk],
+                                                   'mode':"markers",
+                                                   'marker':{"symbol": "x", "size": 8},
+                                                   'name':ev,
+                                                   'legendgroup':ev})
+
+            # plot new picks, if any in window
+            if new_picks:
+                try:
+                    pk = new_picks[stn]
+                except KeyError:
+                    pk = []
+                if not hasattr(pk,'__len__'):
+                    pk = [pk]
+                if len(pk) > 0 and pk[0] > start:
+                    plot_data[stn].append({'x':np.array(pk) - start,
+                                           'y':trc[pk],
+                                           'mode':"markers+text",
+                                           'text':[str(np) for np in range(len(pk))],
+                                           'textposition':"bottom center",
+                                           'name':'new picks',
+                                           'legendgroup':'new picks'})
+                
+       # plot the figure
+        grid_plot(plot_data,figname,number_plots=True)
+        print(f"Picks plot written to {figname}.html")
+        
+    def plot_event(self,event_id, figname="picks_plot", band=[1e3/20e6, 4e6/20e6]):
+        """Plot picks for an event.
+        """
+        estr,tag,trc_num = self.get_event(event_id)
+        # get aim and view_len to call plot_picks
+        picks = self.get_event_picks(estr)
+        pklist = []
+        for pk in picks.values():
+            if hasattr(pk,'__len__'):
+                pklist.extend(pk)
+            else:
+                pklist.append(pk)
+        # set aim in the middle
+        half_span = (max(pklist)-min(pklist))//2
+        view_mid = half_span + min(pklist)
+        self.plot_picks(tag, trc_num, view_mid, half_span*2+2000, figname=figname, band=band)
+        
     def interactive_check_picks(
-        self, tag, trace_num, event_id='', picks=None, view_mid=180000, view_len=40000, band=[1e3/20e6, 4e6/20e6], auto_pick_params={}):
+        self, tag, trace_num, event_id='', picks=None, view_mid=180000, view_len=40000, band=[1e3/20e6, 4e6/20e6], auto_pick=False, auto_pick_params={}):
         """Plot picks for all stations for one (tag,trcnum) and accept user adjustments.
         Auto-picks if no picks are provided or already stored (by noise, only appropriate for very clean signals).
         TODO: my notes imply that plotly is now interactive enough that I could replot after each input
@@ -281,28 +411,18 @@ class LabDataSet(pyasdf.ASDFDataSet):
         # make a filter to remove highest freq. noise and lowest freq. ringing
         sos = signal.iirfilter(2, band, output='sos')
 
-        # auto-pick if necessary
-        # check for existing picks on the trace
-        try:
-            trc_events = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"].list()
-            print(f"This trace has events: {trc_events}")
-            # make a list of existing picked events
-            trc_picks = [self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][estr].parameters for estr in trc_events]
-        except:
-            trc_picks = []
+        # 3/23/22 plot_picks will already plot existing events and autopicking was done separately
+        # removing check for existing events and making autopicking default no
+        
         # check for new input picks
         if not picks:
             picks = {}
-            if not trc_picks: # autopick only if no events already found
+            if auto_pick: # autopick only if no events already found
                 print("Plotting new event with auto_pick_by_noise")
                 for stn in stns:
                     trc = self.waveforms["L0_" + stn][tag][trace_num].data
-                    trc = signal.sosfiltfilt(sos,trc)
+                    trc = signal.sosfilt(sos,trc)
                     picks[stn] = auto_pick_by_noise(trc, **auto_pick_params)
-            else:
-                picks = trc_picks[-1]
-                event_str = trc_events[-1]
-                print(f"Plotting picks for {event_str}")
         self.plot_picks(tag, trace_num, view_mid, view_len, picks, band=band)
 
         # ask for inputs
@@ -367,20 +487,45 @@ class LabDataSet(pyasdf.ASDFDataSet):
             adjust = input("Adjust a channel? - to exit: ")
 
         # add picks to new or existing event, catching and returning overwritten old_picks
-        # only need to check events associated with this trace, which I already listed if they exist
-        if not trc_picks:
-            # definitely new event
+        # need to compare existing event picks to new ones
+        # I plotted existing events, just ask if I'm adjusting one
+        update_event = input("Are you updating/reviewing an existing event? Enter event number or 'n' to create a new event.")
+        if update_event == 'n':
             event_str = self.add_event(tag,trace_num)
         else:
-            # need to compare existing event picks to new ones
-            # I plotted existing events, just ask if I'm adjusting one
-            update_event = input("Are you updating/reviewing an existing event? Enter event number or 'n' to create a new event.")
-            if update_event == 'n':
-                event_str = self.add_event(tag,trace_num)
-            else:
-                event_str = utils.parse_eid(int(update_event))
+            event_str = utils.parse_eid(int(update_event))
             
-        old_picks = self.add_picks(event_str, tag, trace_num, picks)
+        old_picks = self.add_picks(event_str, picks, tag, trace_num)
+        return old_picks
+    
+    def interactive_repick_event(self, event_id, reach=200, band=[1e3/20e6, 2e6/20e6], buffer=1000):
+        """Repick very locally with AIC and show with interactive_check_picks.
+        """
+        event_str,tag,trc_num = self.get_event(event_id)
+        # make sure there are picks to view
+        if 'picks' not in self.auxiliary_data.LabEvents[event_str].list():
+            warnings.warn('Event has no picks.')
+            return
+        # get view range and repicks
+        picks = self.auxiliary_data.LabEvents[event_str].picks.parameters
+        pklist = []
+        sos = signal.iirfilter(4,band,output='sos')
+        for s,pk in picks.items():
+            if not pk.any(): continue
+            if hasattr(pk,'__len__'): pk = pk[0]
+            if pk == -1: continue
+            pklist.append(pk)
+            # repick
+            tr = self.waveforms['L0_'+s][tag][trc_num].data[pk-reach:pk+reach]
+            tr = tr-np.mean(tr[:reach//2])
+            if tr[reach] < 0: tr = tr * -1 # reverse polarity, assume pick on rise
+            tr = signal.sosfilt(sos,tr)
+            aic = AIC_func(tr)
+            picks[s] = np.argmin(aic[5:reach]) + 5 + pk - reach
+        pklist.sort()
+        half_span = (pklist[-1] - pklist[0])//2
+        mid = pklist[0] + half_span
+        old_picks = self.interactive_check_picks(tag, trc_num, picks=picks, view_mid=mid, view_len=(half_span+buffer)*2, band=band)
         return old_picks
     
     def drop_picks(self, event_id, chan_nums):
@@ -484,13 +629,22 @@ class LabDataSet(pyasdf.ASDFDataSet):
         event_str,tag,trace_num = self.get_event(event_id)
 
         if not picks:
-            picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+            if 'LabPicks' in self.auxiliary_data.list():
+                picks = self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+            else:
+                picks = self.auxiliary_data.LabEvents[event_str].picks.parameters
+                # TODO: I keep writing this pick type parser over and over, wish it was a function
+        # process picks
+        use_picks = {}
+        for s,pk in picks.items():
+            if hasattr(pk,'__len__') and len(pk) > 0:
+                pk = pk[0]
+            if pk:
+                use_picks[s] = pk
         # associate locations
-        xys = [self.stat_locs[stn][:2] for stn in picks.keys()
-               if len(picks[stn]) > 0 and picks[stn][0] > 0]
+        xys = [self.stat_locs[stn][:2] for stn in use_picks.keys()]
         # picks to times
-        arrivals = [picks[stn][0] / 40 for stn in picks.keys()
-                    if len(picks[stn]) > 0 and picks[stn][0] > 0]
+        arrivals = [use_picks[stn] / 40 for stn in use_picks.keys()]
         # sort xys and arrivals by arrival
         xys, arrivals = list(zip(*sorted(zip(xys, arrivals), key=lambda xa: xa[1])))
         # get fitting function
@@ -599,26 +753,35 @@ class LabDataSet(pyasdf.ASDFDataSet):
             picks[stn] = [int(travel/2.74 * 40) + o_ind]
         return picks
         
-    def get_dists(self,event_id,prec=2):
+    def get_dists(self,event_id,prec=2,sort=True,org=None):
         """Get epicentral station distances for an event, in mm.
            org and stat_locs in cm, dists returned in mm, rounded to two places by default
         """
-        org = self.get_event_location(event_id)
+        if not org.any():
+            org = self.get_event_location(event_id)
         dists = {stn:np.round(np.sqrt(np.sum((self.stat_locs[stn][:2]-org)**2))*10,prec) for stn in self.stns}
+        if sort:
+            dists = dict(sorted(dists.items(), key=lambda sd: sd[1]))
         return dists
     
     def get_event_location(self,event_id):
         """Get location for event.
         """
         ev,tag,tr = self.get_event(event_id)
-        org = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].data[:]
+        if 'Origins' in self.auxiliary_data.list():
+            org = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].data[:]
+        else:
+            org = self.auxiliary_data.LabEvents[ev]['location'].parameters['loc'][:2]
         return org
 
     def get_event_origin_index(self,event_id):
         """Get location for event.
         """
         ev,tag,tr = self.get_event(event_id)
-        o_ind = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].parameters['o_ind']
+        if 'Origins' in self.auxiliary_data.list():
+            o_ind = self.auxiliary_data.Origins[tag][f'tr{tr}'][ev].parameters['o_ind']
+        else:
+            o_ind = self.auxiliary_data.LabEvents[ev]['location'].parameters['o_ind']
         if hasattr(o_ind,"__len__"): o_ind = o_ind[0]
         return o_ind
 
@@ -653,13 +816,17 @@ class LabDataSet(pyasdf.ASDFDataSet):
         print("LabPicks and Origins present for all other tags.")
         return True
 
-    def get_event(self, event_id):
+    def get_event(self, event_id, near=False):
         """Get event_str, tag, and trace_num for an event in the dataset"""
         event_str = utils.parse_eid(event_id)
-        edict = self.auxiliary_data.LabEvents[event_str].parameters
+        edict = self.auxiliary_data.LabEvents[event_str]['info'].parameters
         tag = edict['tag']
-        tnum = edict['trace_num']
-        return event_str, tag, tnum
+        tnum = edict['trace']
+        if near:
+            arg_out = (event_str, tag, tnum, edict['near'])
+        else:
+            arg_out = (event_str, tag, tnum)
+        return arg_out
     
     ######## get traces ########
     def get_event_traces(self, event_id, tag='', trace_num='', pre=200, tot_len=2048, omit=True, select_stns=[]):
@@ -703,8 +870,46 @@ class LabDataSet(pyasdf.ASDFDataSet):
     def get_event_picks(self, event_id):
         """Shortcut to return the picks dictionary for an event."""
         event_str,tag,trace_num = self.get_event(event_id)
-        return self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+        if 'LabPicks' in self.auxiliary_data.list():
+            return self.auxiliary_data.LabPicks[tag][f"tr{trace_num}"][event_str].parameters
+        else:
+            return self.auxiliary_data.LabEvents[event_str].picks.parameters
+    
+    def dec_plot_all(self, tag, trc_num, beg=0, cut=None, figname='temp.html'):
+        """Show all stations on an interactive plot. Decimated by 20 to handle full trace lengths.
+        """
+        if not cut:
+            stn = 'AE17'
+            cut = len(self.waveforms['L0_'+stn][tag][trc_num].data)
+        fig = go.Figure()
+        for stn in self.stns:
+            dctr = signal.decimate(self.waveforms['L0_'+stn][tag][trc_num].data[beg:cut],20)
+            x = np.arange(beg,cut,20)
+            fig.add_trace(go.Scattergl(x=x,y=dctr,name=stn))
+        fig.write_html(figname)
+        print(f'Plotted {os.getcwd()+figname}')
 
+    def update_event_index(self):
+        ed = {}
+        for ev in self.auxiliary_data.LabEvents.list():
+            lev = self.auxiliary_data.LabEvents[ev]
+            tag = lev.info.parameters['tag']
+            if tag not in ed.keys():
+                ed[tag] = {}
+            tr = f"tr{lev.info.parameters['trace']}"
+            if tr not in ed[tag].keys():
+                ed[tag][tr] = [ev]
+            else:
+                ed[tag][tr].append(ev)
+                
+        # save as aux data
+        if 'EventIndex' in self.auxiliary_data.list():
+            del self.auxiliary_data.EventIndex
+        for tag in ed.keys():
+            self.add_auxiliary_data(data=np.array([]),
+                                    data_type='EventIndex',
+                                    path=tag,
+                                    parameters=ed[tag])
 
 ######## picking helpers ########
 # TODO move these to a picking module
@@ -727,13 +932,14 @@ def get_AIC(trace, near, reach_left=2000, reach_right=2000):
         window = trace.data[near - reach_left : near + reach_right]
     else:
         window = trace[near - reach_left : near + reach_right]
-    AIC = np.zeros_like(window)
-    for i in range(5, len(window) - 5):  # ends of window generate nan and -inf values
-        AIC[i] = i * np.log10(np.var(window[:i])) + (len(window) - i) * np.log10(
-            np.var(window[i:])
-        )
-    return AIC
+    return AIC_func(window)
 
+def AIC_func(data,omit=5):
+    AIC = np.zeros_like(data)
+    for i in range(omit, len(data)-omit):
+        AIC[i] = i * np.log10(np.var(data[:i])) + (len(data) - i) * np.log10(
+            np.var(data[i:]))
+    return AIC
 
 def cut_at_rail(trace):
     """Find index where a signal rails."""

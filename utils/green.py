@@ -67,7 +67,7 @@ def write_cps_dfile(test_dir, dists, dt, npts, vred=0, t0=0):
     #         npts = np.ceil(us/(1e6*dt))
     #         if npts > max_pts: continue
             # write dfile lines with modeling units: cm and s
-            f.write(f'{d:.2f}E-01\t{dt:.1E}\t{npts:n}\t{t0:.1E}\t{vred/10:.2E}\n')
+            f.write(f'{d:.2f}E-01\t{dt:.3E}\t{npts:n}\t{t0:.1E}\t{vred/10:.2E}\n')
             
 
 def write_cps_script(test_dir,h=38.5,pulse='p1', qk=False):

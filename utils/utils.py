@@ -31,18 +31,20 @@ def xcorr_shift(base,model,scale=False,partial=None,maxshift=-1):
     Scale factor is also model compared to base. Multiply the model by the scale factor for the best fit.
     """
     if not partial:
-        partial = len(base)
+        partial = min(len(base),len(model))
     acorr = signal.correlate(base[:partial], base[:partial], mode='same')
     corr = signal.correlate(model[:partial], base[:partial], mode='same')
     lags = signal.correlation_lags(len(model[:partial]), len(base[:partial]), mode='same')
     # get shift, checking for negative correlation from reverse-polarity signals
+    fac = 1
     if np.trapz(corr) < 0:
         corr = corr * -1
+        fac = -1
     shift = lags[np.argmax(corr)]
     if maxshift > 0 and np.abs(shift) > maxshift:
         shift = (np.abs(shift)//shift) * maxshift # apply sign of too large shift to maxshift
     pad = np.zeros(np.abs(shift))
-    fac = np.max(acorr)/np.max(corr)
+    fac *= np.max(acorr)/np.max(corr)
     if not scale: fac = 1
     #shift = shift * -1
     if shift >= 0:
@@ -50,7 +52,7 @@ def xcorr_shift(base,model,scale=False,partial=None,maxshift=-1):
     else:
         out = np.concatenate((pad,fac*model[:shift]))
     # return lags[np.argmax(corr)], np.max(acorr)/np.max(corr)
-    return out
+    return out, shift, fac
 
 def xcorr_coeff(base,model):
     """Get the correlation coefficient for the model compared to base, with zero shift.
